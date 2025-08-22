@@ -1,12 +1,8 @@
 import createContextHook from '@nkzw/create-context-hook';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Recipe } from '@/types/recipe';
-import { mockRecipes } from '@/mocks/recipes';
-
-const STORAGE_KEY = 'user_recipes';
-const FAVORITES_KEY = 'favorite_recipes';
+import { supabase } from '@/lib/supabase';
 
 export const [RecipeProvider, useRecipes] = createContextHook(() => {
   const queryClient = useQueryClient();
@@ -14,31 +10,42 @@ export const [RecipeProvider, useRecipes] = createContextHook(() => {
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
 
-  // Load user recipes from AsyncStorage
+  /**
+   * Load recipes from Supabase
+   */
   const userRecipesQuery = useQuery({
-    queryKey: ['userRecipes'],
+    queryKey: ['recipes'],
     queryFn: async () => {
-      try {
-        const stored = await AsyncStorage.getItem(STORAGE_KEY);
-        return stored ? JSON.parse(stored) : [];
-      } catch (error) {
-        console.error('Error loading recipes:', error);
+      const { data, error } = await supabase
+        .from('recipes')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error loading recipes:', error.message);
         return [];
       }
+      return data || [];
     },
   });
 
-  // Load favorites from AsyncStorage
+  /**
+   * Load favorites from Supabase
+   */
   const favoritesQuery = useQuery({
     queryKey: ['favorites'],
     queryFn: async () => {
-      try {
-        const stored = await AsyncStorage.getItem(FAVORITES_KEY);
-        return stored ? new Set(JSON.parse(stored)) : new Set();
-      } catch (error) {
-        console.error('Error loading favorites:', error);
+      const {
+        data,
+        error,
+      } = await supabase.from('favorites').select('recipe_id');
+
+      if (error) {
+        console.error('Error loading favorites:', error.message);
         return new Set();
       }
+
+      return new Set(data?.map((f: { recipe_id: string }) => f.recipe_id));
     },
   });
 
@@ -48,134 +55,190 @@ export const [RecipeProvider, useRecipes] = createContextHook(() => {
     }
   }, [favoritesQuery.data]);
 
-  // Save user recipes mutation
-  const saveRecipesMutation = useMutation({
-    mutationFn: async (recipes: Recipe[]) => {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
-      return recipes;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['userRecipes'] });
-    },
-  });
+  /**
+   * Add recipe mutation
+   */
+  const addRecipe = useCallback(
+    async (recipe: Omit<Recipe, 'id' | 'createdAt' | 'rating'>) => {
+      const user = (await supabase.auth.getUser()).data.user;
 
-  // Save favorites mutation
-  const saveFavoritesMutation = useMutation({
-    mutationFn: async (favoriteIds: string[]) => {
-      await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(favoriteIds));
-      return favoriteIds;
-    },
-  });
+      const { data, error } = await supabase
+        .from('recipes')
+        .insert([
+          {
+            ...recipe,
+            rating: 0,
+            created_at: new Date().toISOString(),
+            user_id: user?.id,
+          },
+        ])
+        .select()
+        .single();
 
-  // Combine mock recipes with user recipes
+      if (error) throw error;
+      queryClient.invalidateQueries({ queryKey: ['recipes'] });
+      return data;
+    },
+    [queryClient]
+  );
+
+  /**
+   * Update recipe mutation
+   */
+  const updateRecipe = useCallback(
+    async (updatedRecipe: Recipe) => {
+      const { error } = await supabase
+        .from('recipes')
+        .update(updatedRecipe)
+        .eq('id', updatedRecipe.id);
+
+      if (error) throw error;
+      queryClient.invalidateQueries({ queryKey: ['recipes'] });
+    },
+    [queryClient]
+  );
+
+  /**
+   * Remove recipe mutation
+   */
+  const removeRecipe = useCallback(
+    async (recipeId: string) => {
+      const { error } = await supabase
+        .from('recipes')
+        .delete()
+        .eq('id', recipeId);
+
+      if (error) throw error;
+      queryClient.invalidateQueries({ queryKey: ['recipes'] });
+    },
+    [queryClient]
+  );
+
+  /**
+   * Toggle favorite mutation
+   */
+  const toggleFavorite = useCallback(
+    async (recipeId: string) => {
+      const user = (await supabase.auth.getUser()).data.user;
+
+      if (favorites.has(recipeId)) {
+        const { error } = await supabase
+          .from('favorites')
+          .delete()
+          .eq('recipe_id', recipeId)
+          //.eq('user_id', user?.id);
+
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('favorites')
+          .insert([{ recipe_id: recipeId, user_id: user?.id }]);
+
+        if (error) throw error;
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['favorites'] });
+    },
+    [favorites, queryClient]
+  );
+
+  /**
+   * Combine recipes + favorites
+   */
   const allRecipes = useMemo(() => {
     const userRecipes = userRecipesQuery.data || [];
-    return [...mockRecipes, ...userRecipes].map(recipe => ({
+    return userRecipes.map((recipe: Recipe) => ({
       ...recipe,
       isFavorite: favorites.has(recipe.id),
     }));
   }, [userRecipesQuery.data, favorites]);
 
-  // Filter recipes based on search and category
+  /**
+   * Filter recipes by search + category
+   */
   const filteredRecipes = useMemo(() => {
-    return allRecipes.filter(recipe => {
-      const matchesSearch = recipe.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                           recipe.ingredients.some((ing: string) => ing.toLowerCase().includes(searchQuery.toLowerCase()));
-      const matchesCategory = selectedCategory === 'All' || recipe.category === selectedCategory;
+    return allRecipes.filter((recipe: Recipe) => {
+      const matchesSearch =
+        recipe.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        recipe.ingredients.some((ing: string) =>
+          ing.toLowerCase().includes(searchQuery.toLowerCase())
+        );
+
+      const matchesCategory =
+        selectedCategory === 'All' || recipe.category === selectedCategory;
+
       return matchesSearch && matchesCategory;
     });
   }, [allRecipes, searchQuery, selectedCategory]);
 
-  // Get favorite recipes
+  /**
+   * Get only favorites
+   */
   const favoriteRecipes = useMemo(() => {
-    return allRecipes.filter(recipe => recipe.isFavorite);
+    return allRecipes.filter((recipe: Recipe) => recipe.isFavorite);
   }, [allRecipes]);
 
-  const addRecipe = useCallback(async (recipe: Omit<Recipe, 'id' | 'createdAt' | 'rating'>) => {
-    const newRecipe: Recipe = {
-      ...recipe,
-      id: Date.now().toString(),
-      createdAt: new Date().toISOString(),
-      rating: 0,
-    };
-    
-    const currentRecipes = userRecipesQuery.data || [];
-    const updatedRecipes = [...currentRecipes, newRecipe];
-    await saveRecipesMutation.mutateAsync(updatedRecipes);
-    return newRecipe;
-  }, [userRecipesQuery.data, saveRecipesMutation]);
+  /**
+   * Get single recipe by ID
+   */
+  const getRecipeById = useCallback(
+    (id: string) => {
+      return allRecipes.find((recipe: Recipe) => recipe.id === id);
+    },
+    [allRecipes]
+  );
 
-  const toggleFavorite = useCallback(async (recipeId: string) => {
-    const newFavorites = new Set(favorites);
-    if (newFavorites.has(recipeId)) {
-      newFavorites.delete(recipeId);
-    } else {
-      newFavorites.add(recipeId);
-    }
-    setFavorites(newFavorites);
-    await saveFavoritesMutation.mutateAsync(Array.from(newFavorites));
-  }, [favorites, saveFavoritesMutation]);
+  /**
+   * Check if recipe belongs to user
+   */
+  const isUserRecipe = useCallback(
+    (recipeId: string) => {
+      const userRecipes = userRecipesQuery.data || [];
+      return userRecipes.some((r: Recipe) => r.id === recipeId);
+    },
+    [userRecipesQuery.data]
+  );
 
-  const getRecipeById = useCallback((id: string) => {
-    return allRecipes.find(recipe => recipe.id === id);
-  }, [allRecipes]);
-
-  const updateRecipe = useCallback(async (updatedRecipe: Recipe) => {
-    const currentRecipes = userRecipesQuery.data || [];
-    const recipeIndex = currentRecipes.findIndex((r: Recipe) => r.id === updatedRecipe.id);
-    
-    if (recipeIndex !== -1) {
-      const updatedRecipes = [...currentRecipes];
-      updatedRecipes[recipeIndex] = updatedRecipe;
-      await saveRecipesMutation.mutateAsync(updatedRecipes);
-    }
-  }, [userRecipesQuery.data, saveRecipesMutation]);
-
-  const removeRecipe = useCallback(async (recipeId: string) => {
-    const currentRecipes = userRecipesQuery.data || [];
-    const updatedRecipes = currentRecipes.filter((r: Recipe) => r.id !== recipeId);
-    await saveRecipesMutation.mutateAsync(updatedRecipes);
-  }, [userRecipesQuery.data, saveRecipesMutation]);
-
-  const isUserRecipe = useCallback((recipeId: string) => {
-    const userRecipes = userRecipesQuery.data || [];
-    return userRecipes.some((r: Recipe) => r.id === recipeId);
-  }, [userRecipesQuery.data]);
-
-  return useMemo(() => ({
-    recipes: filteredRecipes,
-    allRecipes,
-    favoriteRecipes,
-    searchQuery,
-    setSearchQuery,
-    selectedCategory,
-    setSelectedCategory,
-    addRecipe,
-    updateRecipe,
-    removeRecipe,
-    toggleFavorite,
-    getRecipeById,
-    isUserRecipe,
-    isLoading: userRecipesQuery.isLoading || favoritesQuery.isLoading,
-  }), [
-    filteredRecipes,
-    allRecipes,
-    favoriteRecipes,
-    searchQuery,
-    setSearchQuery,
-    selectedCategory,
-    setSelectedCategory,
-    addRecipe,
-    updateRecipe,
-    removeRecipe,
-    toggleFavorite,
-    getRecipeById,
-    isUserRecipe,
-    userRecipesQuery.isLoading,
-    favoritesQuery.isLoading,
-  ]);
+  return useMemo(
+    () => ({
+      recipes: filteredRecipes,
+      allRecipes,
+      favoriteRecipes,
+      searchQuery,
+      setSearchQuery,
+      selectedCategory,
+      setSelectedCategory,
+      addRecipe,
+      updateRecipe,
+      removeRecipe,
+      toggleFavorite,
+      getRecipeById,
+      isUserRecipe,
+      isLoading: userRecipesQuery.isLoading || favoritesQuery.isLoading,
+    }),
+    [
+      filteredRecipes,
+      allRecipes,
+      favoriteRecipes,
+      searchQuery,
+      setSearchQuery,
+      selectedCategory,
+      setSelectedCategory,
+      addRecipe,
+      updateRecipe,
+      removeRecipe,
+      toggleFavorite,
+      getRecipeById,
+      isUserRecipe,
+      userRecipesQuery.isLoading,
+      favoritesQuery.isLoading,
+    ]
+  );
 });
 
+/**
+ * Hooks to use filtered recipes or favorites
+ */
 export function useFilteredRecipes() {
   const { recipes } = useRecipes();
   return recipes;

@@ -11,6 +11,8 @@ import {
   KeyboardAvoidingView,
   Platform
 } from 'react-native';
+import { supabase } from '@/lib/supabase';
+
 import { AntDesign, MaterialCommunityIcons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
 import { useRecipes } from '@/hooks/recipe-store';
@@ -72,37 +74,47 @@ export default function EditRecipeScreen() {
   const updateInstruction = (index: number, value: string) => { const updated = [...instructions]; updated[index] = value; setInstructions(updated); };
 
   const handleSubmit = async () => {
-    if (!title || !prepTime || !cookTime || !servings) {
-      Alert.alert('Error', 'Please fill in all required fields');
-      return;
-    }
-    const filteredIngredients = ingredients.filter(i => i.trim());
-    const filteredInstructions = instructions.filter(i => i.trim());
-    if (filteredIngredients.length === 0 || filteredInstructions.length === 0) {
-      Alert.alert('Error', 'Please add at least one ingredient and instruction');
-      return;
-    }
+  if (!title || !prepTime || !cookTime || !servings) {
+    Alert.alert('Error', 'Please fill in all required fields');
+    return;
+  }
 
-    try {
-      const updatedRecipe: Recipe = {
-        ...recipe,
-        title,
-        image: imageUrl || recipe.image,
-        prepTime: parseInt(prepTime),
-        cookTime: parseInt(cookTime),
-        servings: parseInt(servings),
-        difficulty,
-        category,
-        ingredients: filteredIngredients,
-        instructions: filteredInstructions,
-        videoUrl: videoUrl || undefined,
-      };
-      await updateRecipe(updatedRecipe);
-      Alert.alert('Success', 'Recipe updated successfully!', [{ text: 'OK', onPress: () => router.back() }]);
-    } catch {
-      Alert.alert('Error', 'Failed to update recipe');
-    }
-  };
+  const filteredIngredients = ingredients.filter(i => i.trim());
+  const filteredInstructions = instructions.filter(i => i.trim());
+
+  if (filteredIngredients.length === 0 || filteredInstructions.length === 0) {
+    Alert.alert('Error', 'Please add at least one ingredient and instruction');
+    return;
+  }
+
+  const { error } = await supabase
+    .from('recipes')
+    .update({
+      title,
+      image: imageUrl || recipe.image,
+      prepTime: parseInt(prepTime),
+      cookTime: parseInt(cookTime),
+      servings: parseInt(servings),
+      difficulty,
+      category,
+      ingredients: filteredIngredients,
+      instructions: filteredInstructions,
+      video_url: videoUrl || null,
+    })
+    .eq('id', recipe.id);
+
+  if (error) {
+    console.error(error);
+    Alert.alert('Error', 'Failed to update recipe');
+    return;
+  }
+
+  Alert.alert('Success', 'Recipe updated successfully!', [
+    { text: 'OK', onPress: () => router.back() },
+  ]);
+  
+};
+
 
   return (
     <SafeAreaView style={styles.safeArea}>

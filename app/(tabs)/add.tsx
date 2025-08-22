@@ -11,11 +11,14 @@ import {
   KeyboardAvoidingView,
   Platform
 } from 'react-native';
+import { supabase } from '@/lib/supabase';
+
 import { AntDesign, MaterialCommunityIcons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
 import { useRecipes } from '@/hooks/recipe-store';
 import { router } from 'expo-router';
 import { mockCategories } from '@/mocks/recipes';
+
 
 export default function AddRecipeScreen() {
   const { addRecipe } = useRecipes();
@@ -50,43 +53,43 @@ export default function AddRecipeScreen() {
     updated[index] = value;
     setInstructions(updated);
   };
+const handleSubmit = async () => {
+  if (!title || !prepTime || !cookTime || !servings) {
+    Alert.alert('Error', 'Please fill in all required fields');
+    return;
+  }
 
-  const handleSubmit = async () => {
-    if (!title || !prepTime || !cookTime || !servings) {
-      Alert.alert('Error', 'Please fill in all required fields');
-      return;
-    }
+  const filteredIngredients = ingredients.filter(i => i.trim());
+  const filteredInstructions = instructions.filter(i => i.trim());
 
-    const filteredIngredients = ingredients.filter(i => i.trim());
-    const filteredInstructions = instructions.filter(i => i.trim());
+  if (filteredIngredients.length === 0 || filteredInstructions.length === 0) {
+    Alert.alert('Error', 'Please add at least one ingredient and instruction');
+    return;
+  }
 
-    if (filteredIngredients.length === 0 || filteredInstructions.length === 0) {
-      Alert.alert('Error', 'Please add at least one ingredient and instruction');
-      return;
-    }
+  try {
+    await addRecipe({
+      title,
+      prepTime: parseInt(prepTime),
+      cookTime: parseInt(cookTime),
+      servings: parseInt(servings),
+      difficulty,
+      category,
+      ingredients: filteredIngredients,
+      instructions: filteredInstructions,
+      image: imageUrl || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400',
+      video_url: videoUrl || null,
+    });
 
-    try {
-      await addRecipe({
-        title,
-        image: imageUrl || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400',
-        prepTime: parseInt(prepTime),
-        cookTime: parseInt(cookTime),
-        servings: parseInt(servings),
-        difficulty,
-        category,
-        ingredients: filteredIngredients,
-        instructions: filteredInstructions,
-        author: 'You',
-        videoUrl: videoUrl || undefined,
-      });
+    Alert.alert('Success', 'Recipe added successfully!', [
+      { text: 'OK', onPress: () => router.back() }
+    ]);
+  } catch (error) {
+    console.error(error);
+    Alert.alert('Error', 'Failed to add recipe');
+  }
+};
 
-      Alert.alert('Success', 'Recipe added successfully!', [
-        { text: 'OK', onPress: () => router.back() }
-      ]);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to add recipe');
-    }
-  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
