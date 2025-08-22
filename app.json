@@ -22,7 +22,7 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "app.younessz-cooking-recipes"
+      "package": "com.younessz.moderndarkcookingrecipes"
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
